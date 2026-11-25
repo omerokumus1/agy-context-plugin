@@ -393,6 +393,16 @@
       position: relative;
       width: 100%;
     }
+    .chart-row {
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+      width: 100%;
+    }
+    .chart-plot {
+      flex: 1;
+      min-width: 0;
+    }
     .chart-svg {
       width: 100%;
       height: 112px;
@@ -402,13 +412,29 @@
     body[data-view="sidebar"] .chart-svg {
       height: 170px;
     }
+    .chart-y {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+      flex: none;
+      min-width: 34px;
+      padding: 4px 0 3px;
+      font-family: var(--cw-font);
+      font-variant-numeric: tabular-nums;
+      font-size: 10.5px;
+      line-height: 1;
+      color: var(--cw-dim);
+      user-select: none;
+    }
     .chart-x {
       display: flex;
       justify-content: space-between;
       font-size: 10.5px;
       color: var(--cw-dim);
       margin-top: 3px;
-      font-family: var(--cw-mono);
+      font-family: var(--cw-font);
+      font-variant-numeric: tabular-nums;
     }
     .chart-tip {
       position: absolute;
@@ -701,10 +727,10 @@
           return `<div class="empty-state" style="padding:20px 0;">No turn history yet.</div>`;
         }
 
-        const W = 360;
+        const W = 320;
         const H = isSidebar ? 168 : 108;
         const padL = 2;
-        const padR = 40;
+        const padR = 2;
         const padT = 8;
         const padB = 6;
         const plotW = W - padL - padR;
@@ -748,30 +774,36 @@
         return `
           <div class="chart-box" id="chart-box">
             <div class="chart-tip" id="chart-tip"></div>
-            <svg class="chart-svg" id="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="g-total" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="var(--cw-teal)" stop-opacity="0.24"/>
-                  <stop offset="100%" stop-color="var(--cw-teal)" stop-opacity="0.01"/>
-                </linearGradient>
-                <linearGradient id="g-cache" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="var(--cw-blue)" stop-opacity="0.22"/>
-                  <stop offset="100%" stop-color="var(--cw-blue)" stop-opacity="0.01"/>
-                </linearGradient>
-              </defs>
-              ${gridY.map((gy, idx) => `
-                <line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" stroke="var(--cw-border)" stroke-width="1"/>
-                <text x="${W - 2}" y="${(gy + 3).toFixed(1)}" text-anchor="end" fill="var(--cw-dim)" font-size="9.5" font-family="var(--cw-mono)">${esc(gridLabels[idx])}</text>
-              `).join('')}
-              <path d="${toArea(totalPts)}" fill="url(#g-total)"/>
-              <path d="${toArea(cachePts)}" fill="url(#g-cache)"/>
-              <path d="${toPath(cachePts)}" fill="none" stroke="var(--cw-blue)" stroke-width="1.5" stroke-opacity="0.9"/>
-              <path d="${toPath(totalPts)}" fill="none" stroke="var(--cw-teal)" stroke-width="1.75"/>
-              ${markerSvg}
-            </svg>
-            <div class="chart-x">
-              <span>#${timeline.minStep}</span>
-              <span>#${timeline.maxStep}</span>
+            <div class="chart-row">
+              <div class="chart-plot">
+                <svg class="chart-svg" id="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="g-total" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--cw-teal)" stop-opacity="0.24"/>
+                      <stop offset="100%" stop-color="var(--cw-teal)" stop-opacity="0.01"/>
+                    </linearGradient>
+                    <linearGradient id="g-cache" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--cw-blue)" stop-opacity="0.22"/>
+                      <stop offset="100%" stop-color="var(--cw-blue)" stop-opacity="0.01"/>
+                    </linearGradient>
+                  </defs>
+                  ${gridY.map((gy) => `
+                    <line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" stroke="var(--cw-border)" stroke-width="1"/>
+                  `).join('')}
+                  <path d="${toArea(totalPts)}" fill="url(#g-total)"/>
+                  <path d="${toArea(cachePts)}" fill="url(#g-cache)"/>
+                  <path d="${toPath(cachePts)}" fill="none" stroke="var(--cw-blue)" stroke-width="1.5" stroke-opacity="0.9"/>
+                  <path d="${toPath(totalPts)}" fill="none" stroke="var(--cw-teal)" stroke-width="1.75"/>
+                  ${markerSvg}
+                </svg>
+                <div class="chart-x">
+                  <span>#${timeline.minStep}</span>
+                  <span>#${timeline.maxStep}</span>
+                </div>
+              </div>
+              <div class="chart-y num" style="height:${H}px;">
+                ${gridLabels.map((lbl) => `<span>${esc(lbl)}</span>`).join('')}
+              </div>
             </div>
           </div>
         `;
@@ -805,7 +837,7 @@
             <div class="conv-wrap">
               <button class="conv-btn" id="conv-btn" title="Switch monitored conversation">
                 <span class="dot ${conv.isRunning ? 'live' : 'green'}"></span>
-                <span class="conv-title">${esc(conv.title)}</span>
+                <span class="conv-title" title="${esc(conv.title)}">${esc(conv.title)}</span>
                 <svg class="chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
               <div class="model-sub">${esc(conv.model)} · <span id="rel-age">${esc(fmtRel(conv.lastModifiedTime) || conv.updatedAgo)}</span></div>
@@ -1087,7 +1119,7 @@
         if (chartSvg && chartTip && turns.length > 0) {
           chartSvg.addEventListener('mousemove', (ev) => {
             const rect = chartSvg.getBoundingClientRect();
-            const plotW = Math.max(1, rect.width * (318 / 360));
+            const plotW = Math.max(1, rect.width);
             const relX = Math.max(0, Math.min(1, (ev.clientX - rect.left) / plotW));
             const idx = turns.length === 1 ? 0 : Math.round(relX * (turns.length - 1));
             const t = turns[idx];

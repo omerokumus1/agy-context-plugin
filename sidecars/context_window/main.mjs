@@ -12,9 +12,13 @@ import {
   fetchGeneratorMetadata,
   fetchTrajectorySteps,
   getModelCatalog,
-  resolveModelSlug,
+  resolveModelName,
 } from './lib/rpc.mjs';
-import { listLocalDbConversations, readConversationFromSqlite } from './lib/sqlite-fallback.mjs';
+import {
+  listLocalDbConversations,
+  readConversationFromSqlite,
+  readConversationSummaryFromSqlite,
+} from './lib/sqlite-fallback.mjs';
 import { buildContextTelemetry } from './lib/telemetry.mjs';
 
 // Silence Node ExperimentalWarning from node:sqlite fallback
@@ -63,6 +67,19 @@ export function createContextService(options = {}) {
   const demoMode = Boolean(options.demo || process.env.ANTIGRAVITY_DEMO === '1');
   const customDbDirs = options.dbDirs || null;
   const version = options.version || readPluginVersion();
+  const sqliteSummaryCache = new Map();
+
+  async function getCachedSqliteSummary(dbItem) {
+    const cached = sqliteSummaryCache.get(dbItem.dbPath);
+    if (cached && cached.mtimeMs === dbItem.mtimeMs) {
+      return cached.summary;
+    }
+    const summary = await readConversationSummaryFromSqlite(dbItem.dbPath, dbItem.cascadeId);
+    if (summary) {
+      sqliteSummaryCache.set(dbItem.dbPath, { mtimeMs: dbItem.mtimeMs, summary });
+    }
+    return summary;
+  }
 
   let prefs = { overrideLimit: 0 };
   try {
@@ -121,18 +138,22 @@ export function createContextService(options = {}) {
     // Merge local SQLite conversations as offline fallback
     const localDbs = listLocalDbConversations(customDbDirs);
     const knownIds = new Set(trajectories.map((t) => t.cascadeId));
+    let sqliteOnlyCount = 0;
     for (const dbItem of localDbs) {
       if (!knownIds.has(dbItem.cascadeId)) {
+        const meta = sqliteOnlyCount < 25 ? await getCachedSqliteSummary(dbItem) : null;
+        sqliteOnlyCount += 1;
         trajectories.push({
           cascadeId: dbItem.cascadeId,
-          summary: `Session ${dbItem.cascadeId.slice(0, 8)}`,
+          summary: meta?.title || `Session ${dbItem.cascadeId.slice(0, 8)}`,
           stepCount: 0,
           status: 'OFFLINE',
           lastModifiedTime: dbItem.lastModifiedTime,
           createdTime: '',
-          requestedModel: '',
+          requestedModel: meta?.model || '',
           generatorModel: '',
-          workspaceUris: [],
+          modelDisplayName: meta?.modelDisplayName || '',
+          workspaceUris: meta?.workspaceUris || [],
           dbPath: dbItem.dbPath,
         });
       }
@@ -182,6 +203,15 @@ export function createContextService(options = {}) {
           genMetadata = parsed.genMetadata;
           steps = parsed.steps;
           source = 'sqlite';
+          if (parsed.title && (!target.summary || /^Session [0-9a-f]{8}$/i.test(target.summary))) {
+            target = { ...target, summary: parsed.title };
+          }
+          if (parsed.modelDisplayName && !target.modelDisplayName) {
+            target = { ...target, modelDisplayName: parsed.modelDisplayName };
+          }
+          if (parsed.workspaceUris?.length && (!target.workspaceUris || target.workspaceUris.length === 0)) {
+            target = { ...target, workspaceUris: parsed.workspaceUris };
+          }
         }
       }
     }
@@ -198,7 +228,13 @@ export function createContextService(options = {}) {
     const conversations = trajectories.slice(0, 25).map((t) => ({
       cascadeId: t.cascadeId,
       title: t.summary || t.cascadeId.slice(0, 8),
-      model: resolveModelSlug(t.requestedModel || t.generatorModel || 'unknown'),
+      model: resolveModelName(
+        t.cascadeId === target.cascadeId && telemetry.conversation?.model !== 'unknown'
+          ? telemetry.conversation.model
+          : (t.requestedModel || t.generatorModel || 'unknown'),
+        modelCatalog,
+        t.modelDisplayName
+      ),
       status: t.status,
       lastModifiedTime: t.lastModifiedTime,
     }));

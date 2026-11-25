@@ -1,4 +1,4 @@
-import { resolveContextLimit, resolveModelSlug } from './rpc.mjs';
+import { resolveContextLimit, resolveModelName, resolveModelSlug } from './rpc.mjs';
 
 const COMPACTION_DROP_THRESHOLD = 10_000;
 const SHADOW_MODEL_RE = /flash-lite|title|intent|summary|checkpoint|m50/i;
@@ -245,7 +245,8 @@ export function buildContextTelemetry({
   let totalResponseTokens = 0;
   let totalCacheReadAll = 0;
   let totalPromptAll = 0;
-  let activeModel = trajectory?.requestedModel || trajectory?.generatorModel || '';
+  let activeModelSlug = trajectory?.requestedModel || trajectory?.generatorModel || '';
+  let activeModelDisplay = resolveModelName(activeModelSlug, modelCatalog, trajectory?.modelDisplayName);
 
   const sortedGen = [...(genMetadata || [])].filter((g) => g && g.chatModel && g.chatModel.usage);
   for (let i = 0; i < sortedGen.length; i++) {
@@ -271,9 +272,17 @@ export function buildContextTelemetry({
 
     if (totalInput <= 0 && outputTokens <= 0) continue;
 
-    const turnModel = resolveModelSlug(usage.model || cm.model || activeModel);
-    if (turnModel && turnModel !== 'unknown' && !SHADOW_MODEL_RE.test(turnModel)) {
-      activeModel = turnModel;
+    const rawTurnModel = usage.model || cm.model || cm.responseModel || activeModelSlug;
+    const turnModelSlug = resolveModelSlug(rawTurnModel);
+    const turnModelDisplay = resolveModelName(rawTurnModel, modelCatalog, cm.modelDisplayName);
+    if (
+      turnModelSlug &&
+      turnModelSlug !== 'unknown' &&
+      !SHADOW_MODEL_RE.test(turnModelSlug) &&
+      !SHADOW_MODEL_RE.test(turnModelDisplay)
+    ) {
+      activeModelSlug = turnModelSlug;
+      activeModelDisplay = turnModelDisplay;
     }
 
     const prevTurn = turns[turns.length - 1];
@@ -293,7 +302,7 @@ export function buildContextTelemetry({
       stepIndex,
       stepIndices,
       timestamp,
-      model: turnModel,
+      model: turnModelDisplay,
       totalTokens: totalInput,
       cacheTokens: cacheRead,
       uncachedTokens: uncached,
@@ -319,7 +328,7 @@ export function buildContextTelemetry({
         stepIndex: stepIdx,
         stepIndices: [stepIdx],
         timestamp: s.metadata?.createdAt || '',
-        model: resolveModelSlug(activeModel),
+        model: activeModelDisplay || resolveModelName(activeModelSlug, modelCatalog, trajectory?.modelDisplayName),
         totalTokens: running,
         cacheTokens: Math.round(prev * 0.75),
         uncachedTokens: running - Math.round(prev * 0.75),
@@ -334,7 +343,10 @@ export function buildContextTelemetry({
   }
 
   const latestTurn = turns[turns.length - 1] || null;
-  const modelSlug = resolveModelSlug(activeModel || 'unknown');
+  const modelSlug = resolveModelSlug(activeModelSlug || 'unknown');
+  const modelDisplay = activeModelDisplay && activeModelDisplay !== 'unknown'
+    ? activeModelDisplay
+    : resolveModelName(modelSlug, modelCatalog, trajectory?.modelDisplayName);
   const autoLimitTokens = resolveContextLimit(modelSlug, modelCatalog);
   const limitTokens = overrideLimit > 0 ? overrideLimit : autoLimitTokens;
 
@@ -395,7 +407,7 @@ export function buildContextTelemetry({
 
   const textReport = [
     `Conversation: ${trajectory?.summary || trajectory?.cascadeId || 'Active Session'}`,
-    `Model: ${modelSlug}`,
+    `Model: ${modelDisplay}`,
     `Context: ${formatTokensCompact(usedTokens)} / ${formatTokensCompact(limitTokens)} (${usedPct.toFixed(1)}%)`,
     `  Cache:    ${formatTokensCompact(cacheTokens)}`,
     `  Uncached: ${formatTokensCompact(uncachedTokens)}`,
@@ -415,7 +427,7 @@ export function buildContextTelemetry({
     conversation: {
       cascadeId: trajectory?.cascadeId || '',
       title: trajectory?.summary || 'No active conversation',
-      model: modelSlug,
+      model: modelDisplay,
       status: trajectory?.status || 'IDLE',
       isLive: true,
       isRunning,

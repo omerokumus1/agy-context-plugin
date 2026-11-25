@@ -12,7 +12,10 @@ const MODEL_LIMIT_FALLBACKS = {
   'gemini-4-neon': 1_000_000,
   'gemini-4-neon-high': 1_000_000,
   'gemini-4-neon-low': 1_000_000,
+  'gemini-4-hydrogen': 1_000_000,
+  'gemini-4-carbon': 1_000_000,
   'gemini-4-argon': 1_000_000,
+  'gemini-3.8-flash': 1_000_000,
   'gemini-3.5-pro': 1_000_000,
   'gemini-3.5-flash': 1_000_000,
   'gemini-3.1-pro': 1_000_000,
@@ -21,6 +24,8 @@ const MODEL_LIMIT_FALLBACKS = {
   'gemini-3-flash': 1_000_000,
   'gemini-2.5-pro': 1_000_000,
   'gemini-2.5-flash': 1_000_000,
+  'claude-opus-5-5': 1_000_000,
+  'claude-sonnet-5-5': 1_000_000,
   'claude-opus-4-6': 200_000,
   'claude-sonnet-4-6': 200_000,
   'claude-opus-5': 256_000,
@@ -35,6 +40,8 @@ const PLACEHOLDER_MODEL_MAP = {
   MODEL_PLACEHOLDER_M84: 'gemini-3.5-flash-high',
   MODEL_PLACEHOLDER_M35: 'claude-sonnet-4-6',
   MODEL_PLACEHOLDER_M26: 'claude-opus-4-6-thinking',
+  MODEL_PLACEHOLDER_M319: 'gemini-3.8-flash-medium',
+  MODEL_PLACEHOLDER_M525: 'gemini-4-hydrogen-high',
 };
 
 let cachedLs = null;
@@ -103,15 +110,34 @@ async function parseLsFromProcesses() {
   }
 }
 
+async function probeLsAddress(rawAddr, csrfToken) {
+  if (/^https?:\/\//i.test(rawAddr)) {
+    return { address: rawAddr, csrfToken, source: 'env' };
+  }
+  const candidates = [`http://${rawAddr}`, `https://${rawAddr}`];
+  for (const address of candidates) {
+    try {
+      await rpcCall({ address, csrfToken }, 'GetAvailableModels', {
+        metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
+      }, 1500);
+      return { address, csrfToken, source: 'env' };
+    } catch {
+      // try next protocol
+    }
+  }
+  return null;
+}
+
 export async function discoverLanguageServer(forceRefresh = false) {
   const envAddr = (process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
   const envCsrf = (process.env.ANTIGRAVITY_CSRF_TOKEN || '').trim();
   if (envAddr && envCsrf) {
-    return {
-      address: envAddr.startsWith('http') ? envAddr : `https://${envAddr}`,
-      csrfToken: envCsrf,
-      source: 'env',
-    };
+    if (!forceRefresh && cachedLs?.source === 'env') return cachedLs;
+    const probed = await probeLsAddress(envAddr, envCsrf);
+    if (probed) {
+      cachedLs = probed;
+      return cachedLs;
+    }
   }
   if (!forceRefresh && cachedLs) return cachedLs;
   const hub = parseLsFromHubFiles();
@@ -207,15 +233,41 @@ export async function getModelCatalog(ls, force = false) {
   return cachedCatalog.models;
 }
 
-export function resolveModelName(rawModel, catalog = {}) {
+function formatSlugFallback(slug) {
+  const s = String(slug || '').trim();
+  if (!s || s === 'unknown' || /^MODEL_PLACEHOLDER_/i.test(s)) return s || 'unknown';
+  const tierMatch = s.match(/^(.*)-(high|medium|low|xhigh|thinking|lite|flash|pro)$/i);
+  const parts = s.split('-');
+  const titleWord = (w) => {
+    if (/^gpt$/i.test(w)) return 'GPT';
+    if (/^oss$/i.test(w)) return 'OSS';
+    if (/^xhigh$/i.test(w)) return 'XHigh';
+    if (/^\d+(?:\.\d+)?$/.test(w)) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  };
+  if (tierMatch && /^(high|medium|low|xhigh|thinking)$/i.test(tierMatch[2])) {
+    const base = tierMatch[1].split('-').map(titleWord).join(' ');
+    const tier = titleWord(tierMatch[2]);
+    return `${base} (${tier})`;
+  }
+  if (parts.length >= 2 && /^(gemini|claude|gpt)/i.test(parts[0])) {
+    return parts.map(titleWord).join(' ');
+  }
+  return s;
+}
+
+export function resolveModelName(rawModel, catalog = {}, preferredDisplayName = '') {
+  const cleanPref = typeof preferredDisplayName === 'string' ? preferredDisplayName.trim() : '';
+  if (cleanPref && cleanPref !== 'unknown' && !/^MODEL_PLACEHOLDER_/i.test(cleanPref)) {
+    return cleanPref;
+  }
   if (!rawModel) return 'unknown';
   const mapped = PLACEHOLDER_MODEL_MAP[rawModel] || rawModel;
   const catEntry = catalog[rawModel] || catalog[mapped];
-  if (catEntry && catEntry.displayName) {
-    // Keep crisp readable slug or displayName
+  if (catEntry && catEntry.displayName && !/^MODEL_PLACEHOLDER_/i.test(catEntry.displayName)) {
     return catEntry.displayName;
   }
-  return mapped;
+  return formatSlugFallback(mapped);
 }
 
 export function resolveModelSlug(rawModel) {

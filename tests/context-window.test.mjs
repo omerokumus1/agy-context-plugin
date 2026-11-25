@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { readConversationFromSqlite } from '../sidecars/context_window/lib/sqlite-fallback.mjs';
+import { resolveModelName } from '../sidecars/context_window/lib/rpc.mjs';
+import { readConversationFromSqlite, readConversationSummaryFromSqlite } from '../sidecars/context_window/lib/sqlite-fallback.mjs';
 import { buildContextTelemetry, formatTokens } from '../sidecars/context_window/lib/telemetry.mjs';
 import { createContextService, startStandaloneServer } from '../sidecars/context_window/main.mjs';
 
@@ -179,6 +180,69 @@ test('readConversationFromSqlite decodes protobuf gen_metadata and steps from a 
     assert.equal(parsed.genMetadata[0].chatModel.usage.cacheReadTokens, 80_000);
     assert.equal(parsed.genMetadata[0].chatModel.usage.inputTokens, 12_000);
     assert.deepEqual(parsed.genMetadata[0].stepIndices, [5]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('SQLite fallback extracts descriptive prompt title, workspace URI, and human-readable model name', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const tempDir = mkdtempSync(join(tmpdir(), 'cw-sqlite-title-'));
+  const dbPath = join(tempDir, 'd3479c99-7582-4551-868f-1503a0d93038.db');
+
+  try {
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, metadata BLOB, step_payload BLOB);
+      CREATE TABLE gen_metadata (data BLOB);
+      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);
+    `);
+
+    const userInputBlob = pbFieldStr(2, 'Refactor sidebar layout and fix chart font family');
+    const stepPayloadBlob = pbFieldBytes(19, userInputBlob);
+    db.prepare('INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)').run(
+      0, 14, 3, Buffer.alloc(0), stepPayloadBlob
+    );
+
+    const tmBlob = pbFieldStr(7, 'file:///Users/demo/Projects/agy-context-plugin');
+    db.prepare('INSERT INTO trajectory_metadata_blob (id, data) VALUES (?, ?)').run('main', tmBlob);
+
+    const usageBlob = Buffer.concat([
+      pbFieldStr(1, 'MODEL_PLACEHOLDER_M319'),
+      pbFieldVarint(2, 2_250),
+      pbFieldVarint(3, 1_650),
+      pbFieldVarint(5, 219_000),
+    ]);
+    const chatModelBlob = Buffer.concat([
+      pbFieldBytes(4, usageBlob),
+      pbFieldStr(19, 'MODEL_PLACEHOLDER_M319'),
+      pbFieldStr(21, 'Gemini 3.8 Flash (Medium)'),
+    ]);
+    const genBlob = pbFieldBytes(1, chatModelBlob);
+    db.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(genBlob);
+    db.close();
+
+    const summary = await readConversationSummaryFromSqlite(dbPath, 'd3479c99-7582-4551-868f-1503a0d93038');
+    assert.equal(summary.title, 'Refactor sidebar layout and fix chart font family');
+    assert.deepEqual(summary.workspaceUris, ['file:///Users/demo/Projects/agy-context-plugin']);
+    assert.equal(summary.modelDisplayName, 'Gemini 3.8 Flash (Medium)');
+
+    const parsed = await readConversationFromSqlite(dbPath);
+    const telemetry = buildContextTelemetry({
+      trajectory: {
+        cascadeId: 'd3479c99-7582-4551-868f-1503a0d93038',
+        summary: parsed.title,
+        workspaceUris: parsed.workspaceUris,
+        requestedModel: parsed.model,
+        modelDisplayName: parsed.modelDisplayName,
+      },
+      genMetadata: parsed.genMetadata,
+      steps: parsed.steps,
+    });
+    assert.equal(telemetry.conversation.title, 'Refactor sidebar layout and fix chart font family');
+    assert.equal(telemetry.conversation.model, 'Gemini 3.8 Flash (Medium)');
+    assert.equal(telemetry.timeline.turns[0].model, 'Gemini 3.8 Flash (Medium)');
+    assert.equal(resolveModelName('MODEL_PLACEHOLDER_M319'), 'Gemini 3.8 Flash (Medium)');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

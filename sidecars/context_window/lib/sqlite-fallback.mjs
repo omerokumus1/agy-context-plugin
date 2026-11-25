@@ -80,6 +80,93 @@ function pbStr(fields, fn, fallback = '') {
   return Buffer.isBuffer(v) ? v.toString('utf8') : fallback;
 }
 
+function pbStrList(fields, fn) {
+  const arr = fields.get(fn);
+  if (!arr || arr.length === 0) return [];
+  return arr.filter((v) => Buffer.isBuffer(v)).map((v) => v.toString('utf8'));
+}
+
+function cleanPromptForTitle(rawText, maxLen = 64) {
+  if (!rawText || typeof rawText !== 'string') return '';
+  let text = rawText
+    .replace(/<\/?[A-Z_]+>/g, ' ')
+    .replace(/\\([\\ ])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (text.length <= maxLen) return text;
+  const slice = text.slice(0, maxLen - 1);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cut = lastSpace >= Math.floor(maxLen * 0.5) ? slice.slice(0, lastSpace) : slice;
+  return `${cut.trimEnd()}…`;
+}
+
+function extractWorkspaceUrisFromDb(db) {
+  const uris = [];
+  try {
+    const rows = db.prepare('SELECT data FROM trajectory_metadata_blob').all();
+    for (const row of rows) {
+      const buf = toBuffer(row.data);
+      if (!buf) continue;
+      const fields = decodePbMessage(buf);
+      for (const candidate of [...pbStrList(fields, 7), ...pbStrList(fields, 1)]) {
+        const trimmed = candidate.trim();
+        if (/^(file|vscode-remote):\/\//i.test(trimmed) && !uris.includes(trimmed)) {
+          uris.push(trimmed);
+        }
+      }
+    }
+  } catch {
+    // ignore missing or malformed trajectory_metadata_blob
+  }
+  return uris;
+}
+
+function extractPromptTitleFromPayload(payloadBuf) {
+  const buf = toBuffer(payloadBuf);
+  if (!buf) return '';
+  const fields = decodePbMessage(buf);
+
+  // UserInput step (step_type 14 -> field 19)
+  const userInput = pbMsg(fields, 19);
+  if (userInput) {
+    const direct = cleanPromptForTitle(pbStr(userInput, 2));
+    if (direct) return direct;
+    const chunks = userInput.get(3) || [];
+    const combined = chunks
+      .map((item) => (Buffer.isBuffer(item) ? pbStr(decodePbMessage(item), 1) : ''))
+      .filter(Boolean)
+      .join(' ');
+    const fromChunks = cleanPromptForTitle(combined);
+    if (fromChunks) return fromChunks;
+  }
+
+  // Subagent / AgentMessage step (step_type 101 -> field 114 -> field 4 -> field 4)
+  const agentMsg = pbMsg(fields, 114);
+  if (agentMsg) {
+    const inner = pbMsg(agentMsg, 4);
+    const body = cleanPromptForTitle(inner ? pbStr(inner, 4) : pbStr(agentMsg, 1));
+    if (body) return body;
+  }
+
+  return '';
+}
+
+function buildFallbackTitle(promptTitle, workspaceUris, cascadeId) {
+  if (promptTitle) return promptTitle;
+  const firstUri = workspaceUris?.[0] || '';
+  if (firstUri) {
+    try {
+      const clean = decodeURIComponent(firstUri).replace(/\/+$/, '');
+      const base = clean.slice(clean.lastIndexOf('/') + 1);
+      if (base) return `${base} (${cascadeId.slice(0, 8)})`;
+    } catch {
+      // ignore URI decode issues
+    }
+  }
+  return cascadeId ? `Session ${cascadeId.slice(0, 8)}` : 'Active Session';
+}
+
 function pbMsg(fields, fn) {
   const arr = fields.get(fn);
   if (!arr || arr.length === 0) return null;
@@ -184,6 +271,8 @@ export async function readConversationFromSqlite(dbPath) {
 
     const genMetadata = [];
     const steps = [];
+    const workspaceUris = tables.includes('trajectory_metadata_blob') ? extractWorkspaceUrisFromDb(db) : [];
+    let promptTitle = '';
 
     if (tables.includes('steps')) {
       const cols = db.prepare('PRAGMA table_info(steps)').all().map((c) => c.name);
@@ -193,6 +282,9 @@ export async function readConversationFromSqlite(dbPath) {
         const idx = typeof row.idx === 'number' ? row.idx : steps.length;
         const stepType = row.step_type ?? row.type ?? 0;
         const status = row.status ?? 0;
+        if (!promptTitle && row.step_payload && (stepType === 14 || stepType === 101 || idx === 0)) {
+          promptTitle = extractPromptTitleFromPayload(row.step_payload);
+        }
         const mdBuf = toBuffer(row.metadata);
         const mdFields = mdBuf ? decodePbMessage(mdBuf) : new Map();
 
@@ -278,7 +370,84 @@ export async function readConversationFromSqlite(dbPath) {
       }
     }
 
-    return { genMetadata, steps };
+    const latestCm = [...genMetadata].reverse().find((g) => g.chatModel?.modelDisplayName || g.chatModel?.model)?.chatModel;
+    const cascadeId = dbPath.split('/').pop().replace(/\.db$/i, '');
+    return {
+      genMetadata,
+      steps,
+      workspaceUris,
+      title: buildFallbackTitle(promptTitle, workspaceUris, cascadeId),
+      model: latestCm?.usage?.model || latestCm?.model || '',
+      modelDisplayName: latestCm?.modelDisplayName || '',
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close error
+    }
+  }
+}
+
+export async function readConversationSummaryFromSqlite(dbPath, cascadeId = '') {
+  const sqlite = await getSqlite();
+  if (!sqlite || !existsSync(dbPath)) return null;
+
+  let db;
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all()
+      .map((r) => r.name);
+
+    const workspaceUris = tables.includes('trajectory_metadata_blob') ? extractWorkspaceUrisFromDb(db) : [];
+    let promptTitle = '';
+
+    if (tables.includes('steps')) {
+      const cols = db.prepare('PRAGMA table_info(steps)').all().map((c) => c.name);
+      if (cols.includes('step_payload')) {
+        const orderCol = cols.includes('idx') ? 'idx' : 'rowid';
+        const rows = db
+          .prepare(`SELECT step_payload FROM steps WHERE step_type IN (14, 101) OR ${orderCol} = 0 ORDER BY ${orderCol} ASC LIMIT 4`)
+          .all();
+        for (const r of rows) {
+          promptTitle = extractPromptTitleFromPayload(r.step_payload);
+          if (promptTitle) break;
+        }
+      }
+    }
+
+    let model = '';
+    let modelDisplayName = '';
+    if (tables.includes('gen_metadata')) {
+      const gmRows = db.prepare('SELECT data FROM gen_metadata ORDER BY rowid DESC LIMIT 5').all();
+      for (const row of gmRows) {
+        const dataBuf = toBuffer(row.data);
+        if (!dataBuf) continue;
+        const root = decodePbMessage(dataBuf);
+        const chatModelMsg = pbMsg(root, 1);
+        if (!chatModelMsg) continue;
+        const usageMsg = pbMsg(chatModelMsg, 4);
+        const dn = pbStr(chatModelMsg, 21);
+        const m = (usageMsg && pbStr(usageMsg, 1)) || pbStr(chatModelMsg, 19);
+        if (dn || m) {
+          model = m;
+          modelDisplayName = dn;
+          break;
+        }
+      }
+    }
+
+    const id = cascadeId || dbPath.split('/').pop().replace(/\.db$/i, '');
+    return {
+      title: buildFallbackTitle(promptTitle, workspaceUris, id),
+      workspaceUris,
+      model,
+      modelDisplayName,
+    };
   } catch {
     return null;
   } finally {
