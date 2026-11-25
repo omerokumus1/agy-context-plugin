@@ -1,0 +1,25 @@
+{
+  "name": "agy-context-plugin",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Live context window monitor, prompt cache analytics, turn timeline, and top token spikes plugin for Google Antigravity Desktop.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "demo": "node sidecars/context_window/main.mjs --standalone --demo --port 17840",
+    "install:plugin": "node scripts/install.mjs",
+    "uninstall:plugin": "node scripts/install.mjs --uninstall"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "antigravity",
+    "antigravity-plugin",
+    "context-window",
+    "llm-telemetry",
+    "gemini",
+    "sidecar"
+  ]
+}

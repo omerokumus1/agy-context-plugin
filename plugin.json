@@ -1,0 +1,29 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "agy-context-plugin",
+  "displayName": "Context Window",
+  "version": "1.0.0",
+  "description": "Live context window monitor, prompt cache analytics, turn-by-turn timeline, and top token spikes for Antigravity Desktop.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Context Window panel to inspect live token usage",
+    "Show my prompt cache hit rate and top context spikes",
+    "Summarize what is consuming my context window in this session"
+  ],
+  "author": {
+    "name": "omerokumus1",
+    "url": "https://github.com/omerokumus1"
+  },
+  "homepage": "https://github.com/omerokumus1/agy-context-plugin",
+  "repository": "https://github.com/omerokumus1/agy-context-plugin",
+  "license": "MIT",
+  "keywords": [
+    "context",
+    "context-window",
+    "agy-context-plugin",
+    "tokens",
+    "cache",
+    "telemetry",
+    "timeline"
+  ]
+}
