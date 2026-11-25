@@ -30,6 +30,13 @@ Built with native `sidecar_sdk` + Antigravity Language Server Connect-RPC and a 
 agy plugin install https://github.com/omerokumus1/agy-context-plugin
 ```
 
+Or validate & install from a local clone:
+
+```bash
+agy plugin validate --strict .
+agy plugin install .
+```
+
 ### Option 2 — Zero-dependency Installer Script
 
 ```bash
@@ -46,22 +53,7 @@ For workspace-only installation (`.agents/plugins/agy-context-plugin/`):
 node scripts/install.mjs --workspace
 ```
 
-### Option 3 — Antigravity Desktop (Install from URL)
-
-In Antigravity Desktop, open **Customizations → Plugins → Install from URL** and enter:
-
-```text
-https://github.com/omerokumus1/agy-context-plugin
-```
-
-Or validate & install from a local clone with `agy`:
-
-```bash
-agy plugin validate --strict .
-agy plugin install .
-```
-
-### Option 4 — Manual Installation
+### Option 3 — Manual Installation
 
 Copy this repository folder to `~/.gemini/config/plugins/agy-context-plugin/` and enable it under **Customizations → Installed** in Antigravity Desktop.
 
